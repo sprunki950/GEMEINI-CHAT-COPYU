@@ -1,0 +1,111 @@
+-- Server Script inside ServerScriptService
+local TextChatService = game:GetService("TextChatService")
+local Players = game:GetService("Players")
+local ChatService = game:GetService("Chat")
+
+-- Table to keep track of who is copying whom
+-- Format: [TargetPlayerUserId] = { [CopycatPlayer1] = true, [CopycatPlayer2] = true }
+local activeCopies = {}
+
+-- Helper function to find players by a partial name match (case-insensitive)
+local function findPlayersByPartialName(searchString)
+	searchString = string.lower(searchString)
+	local foundPlayers = {}
+	
+	for _, player in ipairs(Players:GetPlayers()) do
+		local userName = string.lower(player.Name)
+		local displayName = string.lower(player.DisplayName)
+		
+		if string.find(userName, searchString, 1, true) or string.find(displayName, searchString, 1, true) then
+			table.insert(foundPlayers, player)
+		end
+	end
+	
+	return foundPlayers
+end
+
+-- Core Logic Functions
+local function handleCopyCommand(speaker, argument)
+	if not argument or argument == "" then return end
+	local targets = findPlayersByPartialName(argument)
+	
+	for _, target in ipairs(targets) do
+		if target ~= speaker then
+			if not activeCopies[target.UserId] then
+				activeCopies[target.UserId] = {}
+			end
+			activeCopies[target.UserId][speaker] = true
+		end
+	end
+end
+
+local function handleStopCommand(speaker)
+	for targetUserId, copycats in pairs(activeCopies) do
+		if copycats[speaker] then
+			copycats[speaker] = nil
+			if next(copycats) == nil then
+				activeCopies[targetUserId] = nil
+			end
+		end
+	end
+end
+
+local function processTargetChat(speaker, message)
+	if activeCopies[speaker.UserId] then
+		for copycat, _ in pairs(activeCopies[speaker.UserId]) do
+			if copycat and copycat.Parent then
+				-- Legacy System Fallback (Chat Bubbles)
+				pcall(function()
+					ChatService:Chat(copycat.Character or copycat, message, Enum.ChatColor.White)
+				end)
+			else
+				activeCopies[speaker.UserId][copycat] = nil
+			end
+		end
+	end
+end
+
+-- ==========================================
+-- SYSTEM 1: Legacy Chat Setup (Player.Chatted)
+-- ==========================================
+local function setupPlayerLegacyChat(player)
+	player.Chatted:Connect(function(message)
+		local copyArg = string.match(message, "^/copychat%s+(.+)$")
+		if copyArg then
+			handleCopyCommand(player, copyArg)
+			return
+		end
+		
+		if string.match(message, "^/stopcopying") then
+			handleStopCommand(player)
+			return
+		end
+		
+		processTargetChat(player, message)
+	end)
+end
+
+for _, player in ipairs(Players:GetPlayers()) do
+	setupPlayerLegacyChat(player)
+end
+Players.PlayerAdded:Connect(setupPlayerLegacyChat)
+
+-- ==========================================
+-- SYSTEM 2: Modern Chat Setup (TextChatService)
+-- ==========================================
+task.spawn(function()
+	local textCommands = TextChatService:FindFirstChild("TextCommands")
+	if not textCommands then
+		-- Wait a brief moment to see if TextChatService initializes
+		task.wait(2)
+		textCommands = TextChatService:FindFirstChild("TextCommands")
+	end
+	
+	if textCommands then
+		-- Setup Modern Copy Command
+		local copyCommand = Instance.new("TextChatCommand")
+		copyCommand.Name = "CopyChatCommand"
+		copyCommand.PrimaryAlias = "/copychat"
+		copyCommand.Parent = textCommands
+		copyCommand.Triggered:Connect(function(originatingText
+
