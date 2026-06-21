@@ -1,111 +1,234 @@
--- Server Script inside ServerScriptService
-local TextChatService = game:GetService("TextChatService")
+-- LocalScript / Client Script
 local Players = game:GetService("Players")
-local ChatService = game:GetService("Chat")
+local TextChatService = game:GetService("TextChatService")
+local LocalPlayer = Players.LocalPlayer
 
--- Table to keep track of who is copying whom
--- Format: [TargetPlayerUserId] = { [CopycatPlayer1] = true, [CopycatPlayer2] = true }
-local activeCopies = {}
+-- Load Rayfield UI Library from GitHub repository
+local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
 
--- Helper function to find players by a partial name match (case-insensitive)
-local function findPlayersByPartialName(searchString)
-	searchString = string.lower(searchString)
-	local foundPlayers = {}
-	
+-- Create the main window
+local Window = Rayfield:CreateWindow({
+	Name = "Chat Copy Pro",
+	LoadingTitle = "Initializing System...",
+	LoadingSubtitle = "by Gemini",
+	ConfigurationSaving = {
+		Enabled = false
+	},
+	KeySystem = false
+})
+
+local MainTab = Window:CreateTab("Main Menu", nil)
+
+-- Setup State Variables
+local isCopying = false
+local copyAllActive = false
+local targetsToCopy = {} -- Format: { ["Username"] = true }
+
+-- Helper: Get a fresh list of player names (excluding the LocalPlayer)
+local function getPlayerList()
+	local names = {}
 	for _, player in ipairs(Players:GetPlayers()) do
-		local userName = string.lower(player.Name)
-		local displayName = string.lower(player.DisplayName)
+		if player ~= LocalPlayer then
+			table.insert(names, player.Name)
+		end
+	end
+	return names
+end
+
+-- Helper function to find a player by a partial name match
+local function findPlayerByPartialName(searchString)
+	searchString = string.lower(searchString)
+	for _, player in ipairs(Players:GetPlayers()) do
+		if player ~= LocalPlayer then
+			if string.find(string.lower(player.Name), searchString, 1, true) or string.find(string.lower(player.DisplayName), searchString, 1, true) then
+				return player
+			end
+		end
+	end
+	return nil
+end
+
+-- ==========================================
+-- CHAT ROUTING AND DUPLICATION PIPELINE
+-- ==========================================
+local function duplicateMessage(message)
+	if TextChatService.ChatVersion == Enum.ChatVersion.TextChatService then
+		local generalChannel = TextChatService:FindFirstChild("TextChannels") and TextChatService.TextChannels:FindFirstChild("RBXGeneral")
+		if generalChannel then 
+			generalChannel:SendAsync(message) 
+		end
+	else
+		local chatEvents = game:GetService("ReplicatedStorage"):FindFirstChild("DefaultChatSystemChatEvents")
+		local sayMessage = chatEvents and chatEvents:FindFirstChild("SayMessageRequest")
+		if sayMessage then 
+			sayMessage:FireServer(message, "All") 
+		end
+	end
+end
+
+-- ==========================================
+-- CREATE UI INTERFACE COMPONENTS
+-- ==========================================
+
+local MasterToggle 
+local TargetDropdown
+
+-- 1. Master System Activation Toggle
+MasterToggle = MainTab:CreateToggle({
+	Name = "System Status (Active / Inactive)",
+	CurrentValue = false,
+	Flag = "SystemStatusToggle",
+	Callback = function(Value)
+		isCopying = Value
+	end,
+})
+
+-- 2. Multi-Select Target Dropdown
+TargetDropdown = MainTab:CreateDropdown({
+	Name = "Select Targets to Copy",
+	Options = getPlayerList(),
+	CurrentOption = {}, 
+	MultipleOptions = true, 
+	Flag = "PlayerTargetDropdown",
+	Callback = function(Options)
+		-- If the user clicks things manually, disable the auto-all rule
+		copyAllActive = false
+		table.clear(targetsToCopy)
+		for _, name in ipairs(Options) do
+			targetsToCopy[name] = true
+		end
+	end,
+})
+
+-- 3. Server List Refresh Button
+local RefreshButton = MainTab:CreateButton({
+	Name = "Refresh Player Dropdown List",
+	Callback = function()
+		TargetDropdown:Refresh(getPlayerList(), true)
+	end,
+})
+
+-- ==========================================
+-- COMMAND INTERACTION HANDLERS
+-- ==========================================
+
+-- Function to safely update Rayfield UI visuals from text command inputs
+local function syncUIWithCommands()
+	MasterToggle:Set(isCopying)
+	
+	local activeOptions = {}
+	for name, active in pairs(targetsToCopy) do
+		if active then table.insert(activeOptions, name) end
+	end
+	TargetDropdown:Set(activeOptions)
+end
+
+local function handleChatCommands(message)
+	-- Command 1: /copychat all
+	if string.match(message, "^/copychat%s+all") or string.match(message, "^/chatcopy%s+all") then
+		copyAllActive = true
+		isCopying = true
 		
-		if string.find(userName, searchString, 1, true) or string.find(displayName, searchString, 1, true) then
-			table.insert(foundPlayers, player)
+		table.clear(targetsToCopy)
+		for _, player in ipairs(Players:GetPlayers()) do
+			if player ~= LocalPlayer then
+				targetsToCopy[player.Name] = true
+			end
 		end
+		
+		syncUIWithCommands()
+		
+		Rayfield:Notify({
+			Title = "Command Executed",
+			Content = "Now copying EVERYONE in the server.",
+			Duration = 2
+		})
+		return true
+	end
+
+	-- Command 2: /copychat [name] or /chatcopy [name]
+	local copyArg = string.match(message, "^/copychat%s+(.+)$") or string.match(message, "^/chatcopy%s+(.+)$")
+	if copyArg then
+		copyAllActive = false -- Turn off absolute rule since a specific person was targeted
+		local target = findPlayerByPartialName(copyArg)
+		if target then
+			targetsToCopy[target.Name] = true
+			isCopying = true
+			syncUIWithCommands()
+			
+			Rayfield:Notify({
+				Title = "Command Executed",
+				Content = "Now copying: " .. target.DisplayName,
+				Duration = 2
+			})
+		end
+		return true
 	end
 	
-	return foundPlayers
+	-- Command 3: /stopcopying
+	if string.match(message, "^/stopcopying") then
+		isCopying = false
+		copyAllActive = false
+		table.clear(targetsToCopy)
+		syncUIWithCommands()
+		
+		Rayfield:Notify({
+			Title = "Command Executed",
+			Content = "Stopped copying all players.",
+			Duration = 2
+		})
+		return true
+	end
+	return false
 end
 
--- Core Logic Functions
-local function handleCopyCommand(speaker, argument)
-	if not argument or argument == "" then return end
-	local targets = findPlayersByPartialName(argument)
+-- Hook into incoming messages from other players
+local function watchOtherPlayers(player)
+	if player == LocalPlayer then return end
 	
-	for _, target in ipairs(targets) do
-		if target ~= speaker then
-			if not activeCopies[target.UserId] then
-				activeCopies[target.UserId] = {}
-			end
-			activeCopies[target.UserId][speaker] = true
-		end
+	-- If /copychat all is active, auto-include players who join late
+	if copyAllActive then
+		targetsToCopy[player.Name] = true
+		syncUIWithCommands()
 	end
-end
-
-local function handleStopCommand(speaker)
-	for targetUserId, copycats in pairs(activeCopies) do
-		if copycats[speaker] then
-			copycats[speaker] = nil
-			if next(copycats) == nil then
-				activeCopies[targetUserId] = nil
-			end
-		end
-	end
-end
-
-local function processTargetChat(speaker, message)
-	if activeCopies[speaker.UserId] then
-		for copycat, _ in pairs(activeCopies[speaker.UserId]) do
-			if copycat and copycat.Parent then
-				-- Legacy System Fallback (Chat Bubbles)
-				pcall(function()
-					ChatService:Chat(copycat.Character or copycat, message, Enum.ChatColor.White)
-				end)
-			else
-				activeCopies[speaker.UserId][copycat] = nil
-			end
-		end
-	end
-end
-
--- ==========================================
--- SYSTEM 1: Legacy Chat Setup (Player.Chatted)
--- ==========================================
-local function setupPlayerLegacyChat(player)
+	
 	player.Chatted:Connect(function(message)
-		local copyArg = string.match(message, "^/copychat%s+(.+)$")
-		if copyArg then
-			handleCopyCommand(player, copyArg)
-			return
+		if isCopying and targetsToCopy[player.Name] then
+			duplicateMessage(message)
 		end
-		
-		if string.match(message, "^/stopcopying") then
-			handleStopCommand(player)
-			return
-		end
-		
-		processTargetChat(player, message)
 	end)
 end
 
-for _, player in ipairs(Players:GetPlayers()) do
-	setupPlayerLegacyChat(player)
-end
-Players.PlayerAdded:Connect(setupPlayerLegacyChat)
+for _, p in ipairs(Players:GetPlayers()) do watchOtherPlayers(p) end
+Players.PlayerAdded:Connect(watchOtherPlayers)
 
--- ==========================================
--- SYSTEM 2: Modern Chat Setup (TextChatService)
--- ==========================================
-task.spawn(function()
-	local textCommands = TextChatService:FindFirstChild("TextCommands")
-	if not textCommands then
-		-- Wait a brief moment to see if TextChatService initializes
-		task.wait(2)
-		textCommands = TextChatService:FindFirstChild("TextCommands")
+-- Universal outgoing local hook to guarantee command checks run first
+if TextChatService.ChatVersion == Enum.ChatVersion.TextChatService then
+	TextChatService.SendingMessage:Connect(function(textChatMessage)
+		local handled = handleChatCommands(textChatMessage.Text)
+		if handled then
+			textChatMessage.Status = Enum.TextChatMessageStatus.Success
+		end
+	end)
+else
+	local chatBar = LocalPlayer:WaitForChild("PlayerGui"):WaitForChild("Chat", 5)
+	if chatBar then
+		LocalPlayer.Chatted:Connect(handleChatCommands)
+	else
+		task.spawn(function()
+			while task.wait(0.5) do
+				local success = pcall(function()
+					LocalPlayer.Chatted:Connect(handleChatCommands)
+				end)
+				if success then break end
+			end
+		end)
 	end
-	
-	if textCommands then
-		-- Setup Modern Copy Command
-		local copyCommand = Instance.new("TextChatCommand")
-		copyCommand.Name = "CopyChatCommand"
-		copyCommand.PrimaryAlias = "/copychat"
-		copyCommand.Parent = textCommands
-		copyCommand.Triggered:Connect(function(originatingText
+end
 
+Players.PlayerRemoving:Connect(function(player)
+	if targetsToCopy[player.Name] then
+		targetsToCopy[player.Name] = nil
+		syncUIWithCommands()
+	end
+end)
